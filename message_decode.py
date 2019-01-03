@@ -1,7 +1,7 @@
 import enum
 import json
 from .constants import MAX_HEADER_SIZE
-from .message import Message, MessageType
+from .message import Message
 
 class MessageDecodeStatus(enum.Enum):
     Pending = 0 # no buffer
@@ -11,6 +11,9 @@ class MessageDecodeStatus(enum.Enum):
     Corrupted = 9 # e.g. exceptions, missing segments, timeout ... socket should be closed then
 
 class MessageDecode:
+    """
+    A state machine that handles incoming buffer and yield decoded messages
+    """
     def __init__(self):
         self.state = MessageDecodeStatus.Pending
         self.prefix = -1
@@ -40,16 +43,13 @@ class MessageDecode:
                 return
             yield Message(self._get_msg_type(),self.payload)
 
+    def _get_msg_type(self):
+        return self.header[0]
+
     def _get_payload_len(self):
         if len(self.header) == 2:
             return self.header[1]
         return -1
-
-    def _get_msg_type(self):
-        try:
-            return MessageType(self.header[0])
-        except:
-            return MessageType.Unknown
 
     def reset_state(self):
         if len(self.buffer) > 0:
@@ -82,7 +82,7 @@ class MessageDecode:
         except json.JSONDecodeError as e:
             self.state = MessageDecodeStatus.Corrupted
         return False
-    
+
     def parse_payload(self):
         """
         description: parse payload

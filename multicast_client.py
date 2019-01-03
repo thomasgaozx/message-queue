@@ -1,3 +1,7 @@
+"""
+This is a sample multicast client for testing.
+"""
+
 import selectors
 import socket
 
@@ -23,6 +27,7 @@ def broadcast_message(sel, msg): # example 1
     for key, mask in events:
         sock = key.fileobj
         sock.sendall(msg)
+        key.events
         sel.modify(sock, selectors.EVENT_READ)
     return len(events)
 
@@ -37,12 +42,11 @@ def service_conn(sel, msg_queue): # example 2
             sock = key.fileobj
             if mask & selectors.EVENT_READ:
                 recv_data = sock.recv(1024)
-                if recv_data: pass
-                    # process received data
-                    # may modify the socket to EVENT_WRITE_AGAIN
+                if recv_data:
+                    print(recv_data.decode("utf-8"))
                 else:
                     sel.unregister(sock)
             if mask & selectors.EVENT_WRITE:
                 sock = key.fileobj
-                sock.sendall(msg_queue.pop())
+                sock.sendall(msg_queue.dequeue())
                 sock.modify(sock, selectors.EVENT_READ)

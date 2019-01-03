@@ -1,49 +1,132 @@
 import selectors
 import socket
-import sys
+import threading
 
-HOST_IP = "127.0.0.1"
-HOST_PORT = sys.argv[1]
+from abc import abstractmethod
 
-def serve_forever():
-    sel = selectors.DefaultSelector()
-    lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    lsock.bind((HOST_IP, HOST_PORT))
-    lsock.listen()
-    lsock.setblocking(False)
-    sel.register(lsock, selectors.EVENT_READ, data="lsock")
+from .message_queue import MessageQueue
+from .message import Message
+from .message_decode import MessageDecode
 
-    # event loop
-    while True:
-        event_tuples = sel.select(timeout=None)
-        for key, mask in event_tuples:
-            if key.data == "lsock": # the listening socket
-                accept_conn(key.fileobj, sel)
-                # key.fileobj is the connected socket
-            else: # the connected socket
-                service_conn(key, mask, sel)
-
-def accept_conn(sock, sel):
+class BaseServer(object):
     """
-    Accepts a connection and register the connected 
-    socket for reading
-    """
-    conn, addr = sock.accept()  # Should be ready to read
-    conn.setblocking(False)
-    event_mask = selectors.EVENT_READ
-    sel.register(conn, event_mask, data=addr)
+    description: a basic multicasting server, requests are queued. responses
+    may be distributed sporadically through worker threads
 
-def service_conn(key, mask, sel):
-    if mask & selectors.EVENT_READ: # ready to receive
+    warning: users are expected to implement their own process_messages
+    mechanisms.
+    """
+    def __init__(self, _addr, num_of_workers = 1):
+        """
+        description: initialize and start the server threads
+        """
+        self.request_queue = MessageQueue()
+        self.sel = selectors.DefaultSelector()
+        self.addr = _addr
+
+        self.main_thread = threading.Thread(target=self.serve_forever, args=tuple())
+        self.main_thread.start()
+
+        self.consumer_pool = list()
+        for i in range(num_of_workers):
+            worker_thread = threading.Thread(target=self.consume_messages, args=tuple())
+            worker_thread.start()
+            self.consumer_pool.append(worker_thread)
+
+        self.running = True
+
+    def signal_termination(self):
+        """
+        description: signals all threads to stop and interrupts blocking actions,
+        but does not join any threads
+        """
+        self.running = False
+        self.request_queue.signal_termination()
+
+        dummy_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        dummy_sock.settimeout(2)
+        rc = dummy_sock.connect_ex(self.addr) # should interrupt the blocking `select`
+        return rc == 0
+
+    def deinit(self):
+        """
+        description: signal termination and wait for all working workers to finish
+        their job, and then join all threads
+
+        warning: there is a slim possibility that main thread is not joint
+        returns True if successful, False otherwise
+        """
+        self.signal_termination()
+        for worker_thread in self.consumer_pool:
+            worker_thread.join()
+        self.main_thread.join(timeout=2)
+
+        return self.main_thread.is_alive()
+
+    def serve_forever(self):
+        """
+        [MAIN THREAD]
+        description: server main thread that handles incoming connections, decode
+        incoming bytes from the network buffer, then queue the requests
+        """
+        lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lsock.bind(self.addr)
+        lsock.listen()
+        lsock.setblocking(False)
+        self.sel.register(lsock, selectors.EVENT_READ)
+
+        # event loop
+        while self.running:
+            event_tuples = self.sel.select() # blocking
+            for key, mask in event_tuples:
+                if key is lsock: # the listening socket
+                    self.accept_conn(key.fileobj)
+                else: # the connected socket
+                    self.service_conn(key)
+        self.sel.unregister(lsock)
+        lsock.close()
+        self.sel.close()
+
+    def accept_conn(self, sock):
+        """
+        [MAIN THREAD]
+        description: accepts a connection and register the connected socket for reading
+        """
+        conn, addr = sock.accept()  # should be ready to read
+        conn.setblocking(False)
+        event_mask = selectors.EVENT_READ
+        self.sel.register(conn, event_mask, data=MessageDecode())
+
+    def service_conn(self, key):
+        """
+        [MAIN THREAD]
+        description: coping with incoming bytes
+        """
         sock = key.fileobj
         recv_data = sock.recv(1024)
         if recv_data:
-            # do something with the received data
-            # then send response
-            pass
+            for msg in key.data.handlebuffer(recv_data): # key.data is the msg decode state machine
+                self.request_queue.enqueue((key, msg)) # i.e. (addr, msg)
         else:
-            sel.unregister(sock)
+            self.sel.unregister(sock)
             sock.close()
 
-def handle_raw_data(data):
-    pass
+    def consume_messages(self):
+        """
+        [WORKER THREAD]
+        description: message consumer, running on a separate thread
+        """
+        while self.running:
+            key, msg = self.request_queue.dequeue()
+            self.process_messages(key, msg)
+
+    @abstractmethod
+    def process_messages(self, key, msg):
+        """
+        [WORKER THREAD]
+        description: users are responsible for implementing their own
+        version of message processing
+
+        warning: msg may be None
+        """
+        pass

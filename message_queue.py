@@ -2,6 +2,11 @@ import threading
 import collections
 
 class MessageQueue:
+    """
+    description: thread-safe, like queue.Queue except one can interrupt
+    blocking actions directly through `signal_termination()` instead of
+    pushing a dummy item
+    """
     def __init__(self, upper_cap = 1500):
         self.q = collections.deque()
         self.qcv = threading.Condition()
@@ -25,7 +30,7 @@ class MessageQueue:
         with self.qcv:
             while self.running and len(self.q) == 0:
                 self.qcv.wait()
-            return self.q.pop() if self.running else None
+            return self.q.pop() if len(self.q) > 0 else None
 
     def clear(self):
         with self.qcv:
