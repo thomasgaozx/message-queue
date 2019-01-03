@@ -12,6 +12,10 @@ class MessageQueue:
         self.qcv = threading.Condition()
         self.upper_cap = upper_cap
         self.running = True
+    
+    def __len__(self):
+        with self.qcv:
+            return len(self.q)
 
     def signal_termination(self):
         with self.qcv:

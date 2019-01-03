@@ -1,40 +1,38 @@
 import enum
 import json
-from .constants import MAX_HEADER_SIZE
+from .constants import PREFIX_LEN
 from .message import Message
 
 class MessageDecodeStatus(enum.Enum):
-    Pending = 0 # no buffer
-    DecodingPrefix = 1 # received buffer, decoding prefix
-    DecodingHeader = 2
-    DecodingPayload = 3
-    Corrupted = 9 # e.g. exceptions, missing segments, timeout ... socket should be closed then
+    DecodingPrefix = 0 # received buffer, decoding prefix
+    DecodingHeader = 1
+    DecodingPayload = 2
+    Corrupted = -1 # e.g. exceptions, missing segments, timeout ... socket should be closed then
 
 class MessageDecode:
     """
-    A state machine that handles incoming buffer and yield decoded messages
+    a state machine that handles incoming buffer and yield decoded messages
+    
+    fields: `int prefix`, `list<int> header`, `string payload`, `binary buffer`
     """
     def __init__(self):
-        self.state = MessageDecodeStatus.Pending
+        self.state = MessageDecodeStatus.DecodingPrefix
         self.prefix = -1
         self.header = list()
         self.payload = ""
-        self.buffer = ""
+        self.buffer = b''
 
     def handlebuffer(self, buf):
         """
         description: continue stepping through each decoding process
         yields: Message objects for each decoded message
         """
-        if buf == "":
+        if not buf:
             return
 
         self.buffer += buf
 
-        if self.state == MessageDecodeStatus.Pending:
-            self.state = MessageDecodeStatus.DecodingPrefix
-
-        while True: # continue decoding if each step makes progress
+        while self.state != MessageDecodeStatus.Corrupted: # continue decoding if each step makes progress
             if self.state == MessageDecodeStatus.DecodingPrefix and not self.parse_prefix():
                 return
             if self.state == MessageDecodeStatus.DecodingHeader and not self.parse_header():
@@ -42,6 +40,9 @@ class MessageDecode:
             if self.state == MessageDecodeStatus.DecodingPayload and not self.parse_payload():
                 return
             yield Message(self._get_msg_type(),self.payload)
+
+    def is_corrupted(self):
+        return self.state == MessageDecodeStatus.Corrupted
 
     def _get_msg_type(self):
         return self.header[0]
@@ -52,10 +53,7 @@ class MessageDecode:
         return -1
 
     def reset_state(self):
-        if len(self.buffer) > 0:
-            self.state = MessageDecodeStatus.DecodingPrefix
-        else:
-            self.state = MessageDecodeStatus.Pending
+        self.state = MessageDecodeStatus.DecodingPrefix
 
     def parse_prefix(self):
         """
@@ -63,9 +61,9 @@ class MessageDecode:
         returns: `True` if state is updated, `False` otherwise
         """
         try:
-            if len(self.buffer) >= MAX_HEADER_SIZE:
-                self.prefix = int(self.buffer[:MAX_HEADER_SIZE])
-                self.buffer = self.buffer[MAX_HEADER_SIZE:]
+            if len(self.buffer) >= PREFIX_LEN:
+                self.prefix = int(self.buffer[:PREFIX_LEN]) # emits ValueError
+                self.buffer = self.buffer[PREFIX_LEN:]
                 self.state = MessageDecodeStatus.DecodingHeader
                 return True
         except ValueError as e:
@@ -75,7 +73,7 @@ class MessageDecode:
     def parse_header(self):
         try:
             if len(self.buffer) >= self.prefix:
-                self.header = json.loads(self.buffer[:self.prefix])
+                self.header = json.loads(self.buffer[:self.prefix]) # emits JSONDecodeError
                 self.buffer = self.buffer[self.prefix:]
                 self.state = MessageDecodeStatus.DecodingPayload
                 return True
@@ -93,6 +91,6 @@ class MessageDecode:
                 self.buffer = self.buffer[self._get_payload_len():]
                 self.reset_state()
                 return True
-        except json.JSONDecodeError as e:
+        except Exception as e: # for consistency's sake
             self.state = MessageDecodeStatus.Corrupted
         return False

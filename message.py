@@ -11,6 +11,12 @@ class Message:
     def __init__(self, _msg_type, _payload):
         self.msg_type = _msg_type
         self.payload = _payload
+    
+    def __hash__(self):
+        return hash((self.msg_type, self.payload))
+    
+    def __eq__(self, other):
+        return isinstance(other, self.__class__) and self.msg_type == other.msg_type and self.payload == other.payload
 
     def encode_payload(self):
         return self.payload.encode(UTF_FORMAT)
