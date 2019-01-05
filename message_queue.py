@@ -12,7 +12,7 @@ class MessageQueue:
         self.qcv = threading.Condition()
         self.upper_cap = upper_cap
         self.running = True
-    
+
     def __len__(self):
         with self.qcv:
             return len(self.q)
@@ -31,6 +31,10 @@ class MessageQueue:
         return True
 
     def dequeue(self):
+        """
+        returns: None if the queue is not running and there is no items left,
+        otherwise queue item
+        """
         with self.qcv:
             while self.running and len(self.q) == 0:
                 self.qcv.wait()

@@ -22,8 +22,11 @@ class BaseServer(object):
         """
         self.request_queue = MessageQueue()
         self.sel = selectors.DefaultSelector()
-        self.addr = _addr
+        self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.lsock.bind(_addr)
+        self.addr = self.lsock.getsockname()
 
+        self.running = True
         self.main_thread = threading.Thread(target=self.serve_forever, args=tuple())
         self.main_thread.start()
 
@@ -32,8 +35,6 @@ class BaseServer(object):
             worker_thread = threading.Thread(target=self.consume_messages, args=tuple())
             worker_thread.start()
             self.consumer_pool.append(worker_thread)
-
-        self.running = True
 
     def signal_termination(self):
         """
@@ -54,14 +55,14 @@ class BaseServer(object):
         their job, and then join all threads
 
         warning: there is a slim possibility that main thread is not joint
-        returns True if successful, False otherwise
+        returns: True if successful, False otherwise
         """
         self.signal_termination()
         for worker_thread in self.consumer_pool:
             worker_thread.join()
         self.main_thread.join(timeout=2)
 
-        return self.main_thread.is_alive()
+        return not self.main_thread.is_alive()
 
     def serve_forever(self):
         """
@@ -69,22 +70,22 @@ class BaseServer(object):
         description: server main thread that handles incoming connections, decode
         incoming bytes from the network buffer, then queue the requests
         """
-        lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        lsock.bind(self.addr)
-        lsock.listen()
-        lsock.setblocking(False)
-        self.sel.register(lsock, selectors.EVENT_READ)
+        self.lsock.listen()
+        self.lsock.setblocking(False)
+        self.sel.register(self.lsock, selectors.EVENT_READ)
 
         # event loop
         while self.running:
             event_tuples = self.sel.select() # blocking
             for key, mask in event_tuples:
-                if key is lsock: # the listening socket
+                if key.fileobj is self.lsock: # the listening socket
                     self.accept_conn(key.fileobj)
                 else: # the connected socket
                     self.service_conn(key)
-        self.sel.unregister(lsock)
-        lsock.close()
+
+        # clean up
+        self.sel.unregister(self.lsock)
+        self.lsock.close()
         self.sel.close()
 
     def accept_conn(self, sock):
@@ -117,7 +118,10 @@ class BaseServer(object):
         description: message consumer, running on a separate thread
         """
         while self.running:
-            key, msg = self.request_queue.dequeue()
+            key_msg_tup = self.request_queue.dequeue()
+            if key_msg_tup is None: return
+
+            key, msg = key_msg_tup
             self.process_messages(key, msg)
 
     @abstractmethod
@@ -127,6 +131,6 @@ class BaseServer(object):
         description: users are responsible for implementing their own
         version of message processing
 
-        warning: msg may be None
+        warning: msg may be None?
         """
         pass

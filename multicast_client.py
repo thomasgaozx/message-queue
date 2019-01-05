@@ -1,7 +1,6 @@
 """
 This is a sample multicast client for testing.
 """
-
 import selectors
 import socket
 
