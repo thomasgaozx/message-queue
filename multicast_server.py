@@ -3,6 +3,7 @@ import socket
 import threading
 
 from abc import abstractmethod
+from collections import deque
 
 from .message_queue import MessageQueue
 from .message import Message
@@ -16,9 +17,9 @@ class BaseServer(object):
     warning: users are expected to implement their own process_messages
     mechanisms.
     """
-    def __init__(self, _addr, num_of_workers = 1):
+    def __init__(self, _addr):
         """
-        description: initialize and start the server threads
+        description: initialize the server components
         """
         self.request_queue = MessageQueue()
         self.sel = selectors.DefaultSelector()
@@ -26,15 +27,28 @@ class BaseServer(object):
         self.lsock.bind(_addr)
         self.addr = self.lsock.getsockname()
 
-        self.running = True
-        self.main_thread = threading.Thread(target=self.serve_forever, args=tuple())
-        self.main_thread.start()
+        self.running = False
+        self.consumer_pool = deque()
+        self.main_thread = None
 
-        self.consumer_pool = list()
-        for i in range(num_of_workers):
-            worker_thread = threading.Thread(target=self.consume_messages, args=tuple())
-            worker_thread.start()
-            self.consumer_pool.append(worker_thread)
+    def serve_background(self, num_of_workers = 1):
+        """
+        description: starts serving without blocking the current thread
+        params: `num_of_workers` is the number of worker threads processing the messages
+        """
+        self.start_workers(num_of_workers)
+
+        self.main_thread = threading.Thread(target=self.handle_clients, args=tuple())
+        self.main_thread.start()
+    
+    def serve_blocking(self, num_of_workers = 1):
+        """
+        description: starts serving but blocking the current thread
+        params: `num_of_workers` is the number of worker threads processing the messages
+        """
+        self.start_workers(num_of_workers)
+
+        self.handle_clients()
 
     def signal_termination(self):
         """
@@ -60,16 +74,30 @@ class BaseServer(object):
         self.signal_termination()
         for worker_thread in self.consumer_pool:
             worker_thread.join()
+
+        self.consumer_pool.clear()
         self.main_thread.join(timeout=2)
 
         return not self.main_thread.is_alive()
 
-    def serve_forever(self):
+    def start_workers(self, num_of_workers):
+        if self.running:
+            return
+
+        self.running = True
+        for i in range(num_of_workers):
+            worker_thread = threading.Thread(target=self.consume_messages, args=tuple())
+            worker_thread.start()
+            self.consumer_pool.append(worker_thread)
+
+    def handle_clients(self):
         """
         [MAIN THREAD]
         description: server main thread that handles incoming connections, decode
         incoming bytes from the network buffer, then queue the requests
         """
+        self.running = True
+
         self.lsock.listen()
         self.lsock.setblocking(False)
         self.sel.register(self.lsock, selectors.EVENT_READ)
@@ -80,8 +108,10 @@ class BaseServer(object):
             for key, mask in event_tuples:
                 if key.fileobj is self.lsock: # the listening socket
                     self.accept_conn(key.fileobj)
-                else: # the connected socket
-                    self.service_conn(key)
+                elif not self.service_conn(key): # service the connected socket
+                    # socket is closed or corrupted bits are received
+                    self.sel.unregister(key.fileobj)
+                    key.fileobj.close()
 
         # clean up
         self.sel.unregister(self.lsock)
@@ -108,9 +138,9 @@ class BaseServer(object):
         if recv_data:
             for msg in key.data.handlebuffer(recv_data): # key.data is the msg decode state machine
                 self.request_queue.enqueue((key, msg)) # i.e. (addr, msg)
+            return not key.data.is_corrupted()
         else:
-            self.sel.unregister(sock)
-            sock.close()
+            return False # flags to close the socket
 
     def consume_messages(self):
         """

@@ -5,8 +5,8 @@ from .multicast_server import BaseServer
 from .message import Message
 
 class EchoServer(BaseServer):
-    def __init__(self, _addr, num_of_workers = 1):
-        super(EchoServer, self).__init__(_addr, num_of_workers)
+    def __init__(self, _addr):
+        super(EchoServer, self).__init__(_addr)
 
     def process_messages(self, key, msg):
         sock = key.fileobj
@@ -15,6 +15,8 @@ class EchoServer(BaseServer):
 def test_single_client_sanity():
     # arrange
     echo = EchoServer((LOCALHOST, 0)) # any port would do
+    echo.serve_background()
+
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     msg_encoded = Message(2, "1@1#2$@%^7%^$98&^&*^&*($%#$&%^&").encode()
 
@@ -34,6 +36,8 @@ def test_single_client_sanity():
 def test_multi_client_sanity():
     # arrange
     echo = EchoServer((LOCALHOST, 0)) # any port would do
+    echo.serve_background()
+
     msg_encoded = Message(199, "82734832748723142jsakdfjdskafjkdsafj").encode()
     NUM_OF_CLIENTS= 10
     clients = list()
